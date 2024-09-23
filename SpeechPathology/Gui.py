@@ -2,6 +2,7 @@ import socket
 import PySimpleGUI as sg
 import threading
 import pygame
+import pyaudio
 import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -56,7 +57,6 @@ def start_server(window, host='127.0.0.1', port=5000):
 
 # Function checking Mic Usage
 def monitor_mic(window, threshold=500):
-    import pyaudio
     global first_mic_activity_after_audio_detected, first_text_gaze_after_mic_detected  # Declare global variables
 
     p = pyaudio.PyAudio()
