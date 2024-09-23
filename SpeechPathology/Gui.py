@@ -1,5 +1,5 @@
+import os
 import socket
-import PySimpleGUI as sg
 import threading
 import pygame
 import pyaudio
@@ -7,281 +7,272 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import PySimpleGUI as sg
 from matplotlib.dates import DateFormatter
-import wave
-import time
+import json
 
-# Arrays for Plotting Data
-text_gaze_times = []
-mic_activity_times = []
-audio_playback_times = []
+# Global Variables
+pathToFile = None
+text_gaze_times, mic_activity_times, audio_playback_times = [], [], []
+time_differences_audio_mic, time_differences_text_gaze = [], []
+audio_playing, first_mic_activity_after_audio_detected = False, False
+audio_start_time = None
 
-# Lists to store time differences
-time_differences_audio_mic = []
-time_differences_text_gaze = []
-
-# Flags
-audio_playing = False
-audio_start_time = None  # To store the time when audio starts playing
-first_mic_activity_after_audio_detected = False
-
-# Send Text to be displayed to Unity
+# Socket communication with Unity
 def send_to_unity(message, host='127.0.0.1', port=5001):
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as unity_socket:
-            unity_socket.connect((host, port))
-            unity_socket.sendall(message.encode('utf-8'))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((host, port))
+            s.sendall(message.encode('utf-8'))
     except ConnectionRefusedError:
-        print("Could not connect to Unity. Make sure the Unity server is running.")
+        print("Unity server connection failed.")
 
-# Start Server to receive information from Unity
 def start_server(window, host='127.0.0.1', port=5000):
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((host, port))
-    server_socket.listen(1)
-
-    print(f"Listening on {host}:{port}")
-
-    while True:
-        client_socket, addr = server_socket.accept()
-        print(f"Connection from {addr}")
-
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, port))
+        s.listen(1)
+        print(f"Listening on {host}:{port}")
         while True:
-            data = client_socket.recv(1024)
-            if not data:
-                break
-            message = data.decode('utf-8')
-            window.write_event_value('NewMessage', message + '\n')
+            client_socket, addr = s.accept()
+            print(f"Connection from {addr}")
+            with client_socket:
+                while data := client_socket.recv(1024):
+                    message = data.decode('utf-8')
+                    window.write_event_value('NewMessage', f'{message}\n')
 
-        client_socket.close()
-
-# Function checking Mic Usage
-def monitor_mic(window, threshold=500):
-    global first_mic_activity_after_audio_detected, first_text_gaze_after_mic_detected  # Declare global variables
-
-    p = pyaudio.PyAudio()
-    stream = p.open(format=pyaudio.paInt16, 
-                    channels=1, 
-                    rate=44100, 
-                    input=True, 
-                    frames_per_buffer=1024)
-
-    last_update_time = datetime.now()
-
-    while True:
-        data = np.frombuffer(stream.read(1024, exception_on_overflow=False), dtype=np.int16)
-        volume_level = np.abs(data).mean()
-
-        # Check for activity
-        if volume_level > threshold:
-            current_time = datetime.now()  # Get the Time
-            if (current_time - last_update_time).total_seconds() >= 1:  # Check if 1 second has passed
-                current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                event_message = f'[Mic Activity]   {current_time_str}'
-
-                # Calculate time difference if audio_start_time is set
-                if audio_start_time is not None and not first_mic_activity_after_audio_detected:
-                    time_diff = (current_time - audio_start_time).total_seconds()
-                    time_differences_audio_mic.append(time_diff)
-                    diff_message = f'Time since audio started: {time_diff:.2f} seconds'
-                    window['-TIMELINE-'].update(diff_message + '\n', append=True)
-                    first_mic_activity_after_audio_detected = True
-
-                window.write_event_value('MicActivity', event_message)
-                mic_activity_times.append(current_time)
-                last_update_time = current_time
-
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-
-# Function to play an audio file
+# Audio playback
 def play_audio_file(window, file_path):
     global audio_playing, audio_start_time, first_mic_activity_after_audio_detected
-    
     if audio_playing:
-        print("Audio is already playing. Stop the current audio before playing a new one.")
+        print("Audio already playing.")
         return
 
-    # Initialize pygame mixer
     pygame.mixer.init()
-
-    # Load and play the MP3 file
     pygame.mixer.music.load(file_path)
     pygame.mixer.music.play()
 
-    # Log the time audio playback starts
     audio_start_time = datetime.now()
-    start_time_str = audio_start_time.strftime('%Y-%m-%d %H:%M:%S')
-    event_message = f'[Audio Playback] {start_time_str}'
-    window['-TIMELINE-'].update(event_message + '\n', append=True)
+    event_message = f'[Audio Playback] {audio_start_time.strftime("%Y-%m-%d %H:%M:%S")}'
+    window['-TIMELINE-'].update(f'{event_message}\n', append=True)
     audio_playback_times.append(audio_start_time)
-    
-    # Set the flag indicating audio is playing
     audio_playing = True
-
-    # Reset the mic activity flag
     first_mic_activity_after_audio_detected = False
 
-# Function to stop audio playback
 def stop_audio():
     global audio_playing
-    
     if audio_playing:
         pygame.mixer.music.stop()
         pygame.mixer.quit()
         audio_playing = False
         print("Audio stopped.")
 
-# Function to update the graph with new event times
+# Mic monitoring
+def monitor_mic(window, threshold=500):
+    global first_mic_activity_after_audio_detected
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
+    last_update_time = datetime.now()
+
+    while True:
+        data = np.frombuffer(stream.read(1024, exception_on_overflow=False), dtype=np.int16)
+        if (volume_level := np.abs(data).mean()) > threshold:
+            current_time = datetime.now()
+            if (current_time - last_update_time).total_seconds() >= 1:
+                log_mic_activity(window, current_time)
+                last_update_time = current_time
+
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+def log_mic_activity(window, current_time):
+    global first_mic_activity_after_audio_detected
+    event_message = f'[Mic Activity] {current_time.strftime("%Y-%m-%d %H:%M:%S")}'
+    
+    if audio_start_time and not first_mic_activity_after_audio_detected:
+        time_diff = (current_time - audio_start_time).total_seconds()
+        time_differences_audio_mic.append(time_diff)
+        window['-TIMELINE-'].update(f'Time since audio started: {time_diff:.2f} seconds\n', append=True)
+        first_mic_activity_after_audio_detected = True
+    
+    window.write_event_value('MicActivity', event_message)
+    mic_activity_times.append(current_time)
+
+# Graph functions for medical-style graphs
 def update_graph(ax):
     ax.clear()
-    ax.set_title('Event Timeline')
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Events')
+    ax.set_title('Event Timeline', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Events', fontsize=12)
     ax.xaxis_date()
     ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
 
-    # Plot the events
-    if text_gaze_times:
-        ax.plot(text_gaze_times, [1] * len(text_gaze_times), 'bo', label='Text Gaze')
-    if mic_activity_times:
-        ax.plot(mic_activity_times, [1.2] * len(mic_activity_times), 'ro', label='Mic Activity')
-    if audio_playback_times:
-        ax.plot(audio_playback_times, [1.4] * len(audio_playback_times), 'go', label='Audio Playback')
-    if text_gaze_times or mic_activity_times or audio_playback_times: 
-        ax.legend()
+    # Set grid
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
 
-# Function to create and manage the GUI
-def create_gui():
-    layout = [
-        [
-            sg.Column([ 
-                [sg.Text('Enter Text to be Displayed:', size=(30, 1), font=("Helvetica", 16))],
-                [sg.InputText(size=(75, 1), key='-INPUT-')],
-                [sg.Button('Send to Unity')],
-                [sg.Text('Timeline:', size=(30, 1), font=("Helvetica", 16))],
-                [sg.Multiline(size=(75, 25), key='-TIMELINE-', autoscroll=True, disabled=True)],
-                [sg.Text('Audio File:', size=(30, 1), font=("Helvetica", 16))],
-                [sg.InputText(key='-AUDIO-FILE-', size=(40, 1)), sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),))],
-                [sg.Button('Play Audio'), sg.Button('Stop Audio')],
-                [sg.Button('Display Average Time (Audio-Mic)')],
-                [sg.Button('Display Average Time (Text Gaze-Mic)')],
-            ]),
-            sg.VSeperator(),
-            sg.Column([
-                [sg.Canvas(key='-CANVAS-', size=(600, 400))]
-            ])
-        ],
-        [sg.Button('Exit')]
-    ]
+    # Set colors for markers
+    colors = {'Text Gaze': 'blue', 'Mic Activity': 'red', 'Audio Playback': 'green'}
+    events = {
+        'Text Gaze': text_gaze_times,
+        'Mic Activity': mic_activity_times,
+        'Audio Playback': audio_playback_times
+    }
 
-    window = sg.Window('Speech Pathology XR', layout, finalize=True)
-    return window
+    for i, (event_label, event_times) in enumerate(events.items()):
+        if not event_times:
+            continue
 
-# Function to draw the initial Matplotlib graph
+        # Plot the events
+        ax.plot(event_times, [i] * len(event_times), 'o', label=event_label, color=colors[event_label], markersize=6)
+
+        # Shade clusters within 3 seconds
+        for j in range(1, len(event_times)):
+            if (event_times[j] - event_times[j - 1]).total_seconds() <= 3:
+                ax.axvspan(event_times[j - 1], event_times[j], color=colors[event_label], alpha=0.2)
+
+    if any(events.values()):
+        ax.legend(frameon=False, fontsize=10)
+
+    # Set y-ticks to avoid clutter
+    ax.set_yticks(list(range(len(events))))
+    ax.set_yticklabels(list(events.keys()), fontsize=10)
+
+
+
 def draw_figure(canvas_elem):
-    fig, ax = plt.subplots(figsize=(6, 4))  # Adjust figure size to match Canvas size
+    fig, ax = plt.subplots(figsize=(8, 4))  # Wider figure for a better layout
+    fig.patch.set_facecolor('white')  # White background
     canvas = FigureCanvasTkAgg(fig, canvas_elem.TKCanvas)
     canvas.draw()
     canvas.get_tk_widget().pack(side='top', fill='both', expand=1)
     return fig, ax, canvas
 
-# Function to display the average time between audio playback and mic activity
-def display_average_time_audio_mic(window):
-    if time_differences_audio_mic:
-        average_time = sum(time_differences_audio_mic) / len(time_differences_audio_mic)
-        average_message = f'Average time between audio playback and mic activity: {average_time:.2f} seconds'
+# Average time display
+def display_average_time(window, time_diffs, label):
+    if time_diffs:
+        avg_time = sum(time_diffs) / len(time_diffs)
+        message = f'Average time between {label}: {avg_time:.2f} seconds\n'
     else:
-        average_message = 'No microphone activity detected after audio playback.'
+        message = f'No activity detected after {label}.\n'
     
-    window['-TIMELINE-'].update(average_message + '\n', append=True)
+    window['-TIMELINE-'].update(message, append=True)
 
-# Function to display the average time between text gaze and mic activity
-def display_average_time_text_gaze_mic(window):
-    if time_differences_text_gaze:
-        average_time = sum(time_differences_text_gaze) / len(time_differences_text_gaze)
-        average_message = f'Average time between text gaze and mic activity: {average_time:.2f} seconds'
-    else:
-        average_message = 'No microphone activity detected after text gaze.'
+# GUI setup
+def create_gui():
+    layout = [
+            [sg.Canvas(key='-CANVAS-', size=(600, 400), expand_x=True, expand_y=True)],
+            [sg.Text('Enter Text to be Displayed:'), sg.InputText(size=(75, 1), key='-INPUT-'), sg.Button('Send to Unity')],
+            [sg.Text('Audio File:'), sg.InputText(key='-AUDIO-FILE-'), sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),)),sg.Button('Play Audio'), sg.Button('Stop Audio')],
+            [sg.Button('Exit')]
+    ]
+    return sg.Window('Session Mode - Speech Pathology XR', layout, finalize=True, resizable=True, size=(1920, 1080), location=(0, 0))
+
+# Session Mode workflow
+def session_mode():
+    global pathToFile
+    pathToFile = sg.popup_get_folder('Select or create a folder for this session')
     
-    window['-TIMELINE-'].update(average_message + '\n', append=True)
-
-# Main function to run the server and GUI
-def main():
-    global first_text_gaze_after_mic_detected  # Declare global variable
-
+    if not pathToFile:
+        sg.popup('No folder selected. Exiting session mode.')
+        return
+    
     window = create_gui()
-
-    # Create and display the graph
     fig, ax, canvas = draw_figure(window['-CANVAS-'])
 
-    # Start the server in a separate thread
-    server_thread = threading.Thread(target=start_server, args=(window,))
-    server_thread.daemon = True
-    server_thread.start()
-
-    # Start microphone activity detection in a separate thread
-    mic_thread = threading.Thread(target=monitor_mic, args=(window,))
-    mic_thread.daemon = True
-    mic_thread.start()
+    threading.Thread(target=start_server, args=(window,), daemon=True).start()
+    threading.Thread(target=monitor_mic, args=(window,), daemon=True).start()
 
     while True:
         event, values = window.read(timeout=100)
-
         if event in (sg.WIN_CLOSED, 'Exit'):
+            # Save data to JSON before closing
+            save_data_to_json()
             break
         elif event == 'Send to Unity':
             message = values['-INPUT-']
             send_to_unity(message)
-            current_time = datetime.now()
-            current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-            log_message = f'[Text Gaze]      {current_time_str}'
-            window['-TIMELINE-'].update(log_message + '\n', append=True)
-            text_gaze_times.append(current_time)
-
-            # Calculate the time difference between text gaze and the first mic activity after text gaze
-            if mic_activity_times and not first_text_gaze_after_mic_detected:
-                last_text_gaze_time = text_gaze_times[-1]
-                first_mic_after_text_gaze = None
-
-                for mic_time in mic_activity_times:
-                    if mic_time > last_text_gaze_time:
-                        first_mic_after_text_gaze = mic_time
-                        break
-
-                if first_mic_after_text_gaze:
-                    time_diff = (first_mic_after_text_gaze - last_text_gaze_time).total_seconds()
-                    time_differences_text_gaze.append(time_diff)
-                    diff_message = f'Time between text gaze and first mic activity after: {time_diff:.2f} seconds'
-                    window['-TIMELINE-'].update(diff_message + '\n', append=True)
-                    first_text_gaze_after_mic_detected = True
-                else:
-                    diff_message = 'No microphone activity detected after the last text gaze.'
-                    window['-TIMELINE-'].update(diff_message + '\n', append=True)
-
-        elif event == 'NewMessage':
-            window['-TIMELINE-'].update(values[event], append=True)
-
-        elif event == 'MicActivity':
-            window['-TIMELINE-'].update(values[event] + '\n', append=True)
-
+            log_text_gaze(window)
         elif event == 'Play Audio':
-            file_path = values['-AUDIO-FILE-']
-            if file_path:
-                play_audio_file(window, file_path)
-
+            play_audio_file(window, values['-AUDIO-FILE-'])
         elif event == 'Stop Audio':
             stop_audio()
-
-        elif event == 'Display Average Time (Audio-Mic)':
-            display_average_time_audio_mic(window)
-
-        elif event == 'Display Average Time (Text Gaze-Mic)': 
-            display_average_time_text_gaze_mic(window)
+        elif event == 'Display Avg Time (Audio-Mic)':
+            display_average_time(window, time_differences_audio_mic, "audio playback and mic activity")
+        elif event == 'Display Avg Time (Text Gaze-Mic)':
+            display_average_time(window, time_differences_text_gaze, "text gaze and mic activity")
 
         update_graph(ax)
         canvas.draw()
+
+    window.close()
+
+def log_text_gaze(window):
+    current_time = datetime.now()
+    window['-TIMELINE-'].update(f'[Text Gaze] {current_time.strftime("%Y-%m-%d %H:%M:%S")}\n', append=True)
+    text_gaze_times.append(current_time)
+
+def save_data_to_json():
+    global pathToFile
+    data = {
+        'text_gaze_times': [time.isoformat() for time in text_gaze_times],
+        'mic_activity_times': [time.isoformat() for time in mic_activity_times],
+        'audio_playback_times': [time.isoformat() for time in audio_playback_times],
+        'time_differences_audio_mic': time_differences_audio_mic,
+        'time_differences_text_gaze': time_differences_text_gaze
+    }
+    json_path = os.path.join(pathToFile, 'session_data.json')
+    with open(json_path, 'w') as json_file:
+        json.dump(data, json_file, indent=4)
+    print(f'Data saved to {json_path}')
+
+# Review Mode
+def review_mode():
+    json_file = sg.popup_get_file('Select JSON file', file_types=(("JSON Files", "*.json"),))
+    if not json_file:
+        sg.popup('No file selected. Exiting review mode.')
+        return
+    
+    with open(json_file, 'r') as file:
+        data = json.load(file)
+
+    global text_gaze_times, mic_activity_times, audio_playback_times, time_differences_audio_mic, time_differences_text_gaze
+    text_gaze_times = [datetime.fromisoformat(ts) for ts in data['text_gaze_times']]
+    mic_activity_times = [datetime.fromisoformat(ts) for ts in data['mic_activity_times']]
+    audio_playback_times = [datetime.fromisoformat(ts) for ts in data['audio_playback_times']]
+    time_differences_audio_mic = data['time_differences_audio_mic']
+    time_differences_text_gaze = data['time_differences_text_gaze']
+
+    layout = [
+        [sg.Text('Review Session Data', font=('Helvetica', 16))],
+        [sg.Canvas(key='-REVIEW-CANVAS-', size=(400, 400))],
+        [sg.Button('Back')]
+    ]
+    review_window = sg.Window('Review Mode', layout, finalize=True, resizable=True, size=(1920, 1080), location=(0, 0))
+
+    fig, ax, canvas = draw_figure(review_window['-REVIEW-CANVAS-'])
+    update_graph(ax)
+    canvas.draw()
+
+    while True:
+        event, values = review_window.read()
+        if event in (sg.WIN_CLOSED, 'Back'):
+            break
+
+    review_window.close()
+
+# Main program execution
+def main():
+    layout = [[sg.Button('Session Mode'), sg.Button('Review Mode'), sg.Button('Exit')]]
+    window = sg.Window('Main Menu', layout, resizable=True)
+
+    while True:
+        event, values = window.read()
+        if event == sg.WIN_CLOSED or event == 'Exit':
+            break
+        elif event == 'Session Mode':
+            session_mode()
+        elif event == 'Review Mode':
+            review_mode()
 
     window.close()
 
