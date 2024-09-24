@@ -98,7 +98,7 @@ def log_mic_activity(window, current_time):
 
 # Graph functions for medical-style graphs
 def update_graph(ax):
-    ax.clear()
+    ax.clear()  
     ax.set_title('Event Timeline', fontsize=14, fontweight='bold')
     ax.set_xlabel('Time', fontsize=12)
     ax.set_ylabel('Events', fontsize=12)
@@ -258,7 +258,12 @@ def review_mode():
 
 # Main program execution
 def main():
-    layout = [[sg.Button('Session Mode'), sg.Button('Review Mode'), sg.Button('Exit')]]
+    layout = [
+        [sg.Text('Welcome to the Speech Pathology Program', font=('Helvetica', 24), pad=(10, 20))],
+        [sg.Column([[sg.Button('Session Mode'), sg.Button('Review Mode')]], justification='center', element_justification='center', expand_x=True)],
+        [sg.Column([[sg.Button('Exit', size=(10, 1))]], justification='center', element_justification='center', expand_x=True)]  # Centering the Exit button
+]
+
     window = sg.Window('Main Menu', layout, resizable=True)
 
     while True:
