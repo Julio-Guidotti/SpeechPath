@@ -53,7 +53,6 @@ def play_audio_file(window, file_path):
 
     audio_start_time = datetime.now()
     event_message = f'[Audio Playback] {audio_start_time.strftime("%Y-%m-%d %H:%M:%S")}'
-    window['-TIMELINE-'].update(f'{event_message}\n', append=True)
     audio_playback_times.append(audio_start_time)
     audio_playing = True
     first_mic_activity_after_audio_detected = False
@@ -92,7 +91,6 @@ def log_mic_activity(window, current_time):
     if audio_start_time and not first_mic_activity_after_audio_detected:
         time_diff = (current_time - audio_start_time).total_seconds()
         time_differences_audio_mic.append(time_diff)
-        window['-TIMELINE-'].update(f'Time since audio started: {time_diff:.2f} seconds\n', append=True)
         first_mic_activity_after_audio_detected = True
     
     window.write_event_value('MicActivity', event_message)
@@ -155,7 +153,6 @@ def display_average_time(window, time_diffs, label):
     else:
         message = f'No activity detected after {label}.\n'
     
-    window['-TIMELINE-'].update(message, append=True)
 
 # GUI setup
 def create_gui():
@@ -208,7 +205,6 @@ def session_mode():
 
 def log_text_gaze(window):
     current_time = datetime.now()
-    window['-TIMELINE-'].update(f'[Text Gaze] {current_time.strftime("%Y-%m-%d %H:%M:%S")}\n', append=True)
     text_gaze_times.append(current_time)
 
 def save_data_to_json():
