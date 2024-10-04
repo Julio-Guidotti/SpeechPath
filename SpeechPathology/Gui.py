@@ -1,8 +1,10 @@
 import os
+import time
 import socket
 import threading
 import pygame
 import pyaudio
+import cv2
 import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -39,10 +41,17 @@ def start_server(window, host='127.0.0.1', port=5000):
                 while data := client_socket.recv(1024):
                     message = data.decode('utf-8')
                     window.write_event_value('NewMessage', f'{message}\n')
-
+                    current_time = datetime.now()
+                    text_gaze_times.append(current_time)
+                    
+                    
+# Gaze Monitoring
+                    
+                    
+                    
 # Audio playback
 def play_audio_file(window, file_path):
-    global audio_playing, audio_start_time, first_mic_activity_after_audio_detected
+    global audio_playing, audio_start_time, first_mic_activity_after_audio_detected, audio_playing_time
     if audio_playing:
         print("Audio already playing.")
         return
@@ -56,7 +65,21 @@ def play_audio_file(window, file_path):
     audio_playback_times.append(audio_start_time)
     audio_playing = True
     first_mic_activity_after_audio_detected = False
+    audio_playing_time = 0  # Reset the counter for every playback
 
+    # Start a separate thread to log audio events every second
+    threading.Thread(target=log_audio_events, daemon=True).start()
+
+def log_audio_events():
+    global audio_playing, audio_playing_time
+    while audio_playing:
+        time.sleep(1)
+        audio_playing_time += 1
+        current_time = datetime.now()
+        # event_message = f'[Audio Playing at {audio_playing_time} sec]'
+        audio_playback_times.append(current_time)
+       # print(event_message)  # Potentially having event timeline outputted as a json aswell?
+        
 def stop_audio():
     global audio_playing
     if audio_playing:
@@ -96,6 +119,20 @@ def log_mic_activity(window, current_time):
     window.write_event_value('MicActivity', event_message)
     mic_activity_times.append(current_time)
 
+# Webcam feed capturing function
+def update_webcam(window):
+    cap = cv2.VideoCapture(0)  # Use the default camera
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.resize(frame, (320, 240))  # Resize for better display
+        imgbytes = cv2.imencode('.png', frame)[1].tobytes()  # Convert the frame to PNG bytes
+        window.write_event_value('-WEBCAM-FRAME-', imgbytes)
+
+    cap.release()
+
+
 # Graph functions for medical-style graphs
 def update_graph(ax):
     ax.clear()  
@@ -109,11 +146,11 @@ def update_graph(ax):
     ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
 
     # Set colors for markers
-    colors = {'Text Gaze': 'blue', 'Mic Activity': 'red', 'Audio Playback': 'green'}
+    colors = {'Text Gaze': 'blue', 'Mic Activity': 'red', 'Audio': 'green'}
     events = {
         'Text Gaze': text_gaze_times,
         'Mic Activity': mic_activity_times,
-        'Audio Playback': audio_playback_times
+        'Audio': audio_playback_times
     }
 
     for i, (event_label, event_times) in enumerate(events.items()):
@@ -138,33 +175,59 @@ def update_graph(ax):
 
 
 def draw_figure(canvas_elem):
-    fig, ax = plt.subplots(figsize=(8, 4))  # Wider figure for a better layout
-    fig.patch.set_facecolor('white')  # White background
+    fig, ax = plt.subplots(figsize=(8, 2.5))  
+    fig.patch.set_facecolor('white')
     canvas = FigureCanvasTkAgg(fig, canvas_elem.TKCanvas)
     canvas.draw()
-    canvas.get_tk_widget().pack(side='top', fill='both', expand=1)
+    canvas.get_tk_widget().pack(side='top')
     return fig, ax, canvas
 
-# Average time display
-def display_average_time(window, time_diffs, label):
-    if time_diffs:
-        avg_time = sum(time_diffs) / len(time_diffs)
-        message = f'Average time between {label}: {avg_time:.2f} seconds\n'
-    else:
-        message = f'No activity detected after {label}.\n'
-    
-
-# GUI setup
+# GUI Setup
 def create_gui():
     layout = [
-            [sg.Canvas(key='-CANVAS-', size=(600, 400), expand_x=True, expand_y=True)],
-            [sg.Text('Enter Text to be Displayed:'), sg.InputText(size=(75, 1), key='-INPUT-'), sg.Button('Send to Unity')],
-            [sg.Text('Audio File:'), sg.InputText(key='-AUDIO-FILE-'), sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),)),sg.Button('Play Audio'), sg.Button('Stop Audio')],
-            [sg.Button('Exit')]
+        [sg.Canvas(key='-CANVAS-', size=(500, 540), pad=(0, 0))],
+    
+        # Bottom half: Text input, audio controls, and webcam feed
+        [
+            sg.Column(
+    [
+        [
+            sg.Text('Enter Text to be Displayed:', size=(30, 1)),  
+            sg.InputText(size=(50, 1), key='-INPUT-'), 
+            sg.Button('Send to Unity', size=(20, 1))
+        ],
+     
+        [
+            sg.Text('Audio File:', size=(30, 1)),  
+            sg.InputText(size=(50, 1), key='-AUDIO-FILE-'), 
+            sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),), size=(20, 1)), 
+        ],
+        [
+            sg.Button('Play Audio', size=(20, 1)), 
+            sg.Button('Stop Audio', size=(20, 1)),
+            sg.Button('Exit', size=(20, 1))  
+        ]
+    ],
+    vertical_alignment='top',
+    size=(800, 850),
+    element_justification='left'
+),
+            sg.Column(
+                [
+                    [sg.Text('Live Mouth Feed', font=('Helvetica', 16, 'bold'), pad=(10, 10))],
+                    [sg.Image(key='-WEBCAM-', size=(640, 480))]  # Webcam feed column
+                ],
+                vertical_alignment='top',
+                size=(640, 540)  # Fixed width for the webcam feed
+            )
+        ],
     ]
+
     return sg.Window('Session Mode - Speech Pathology XR', layout, finalize=True, resizable=True, size=(1920, 1080), location=(0, 0))
 
-# Session Mode workflow
+
+
+# Session Mode
 def session_mode():
     global pathToFile
     pathToFile = sg.popup_get_folder('Select or create a folder for this session')
@@ -178,6 +241,7 @@ def session_mode():
 
     threading.Thread(target=start_server, args=(window,), daemon=True).start()
     threading.Thread(target=monitor_mic, args=(window,), daemon=True).start()
+    threading.Thread(target=update_webcam, args=(window,), daemon=True).start()
 
     while True:
         event, values = window.read(timeout=100)
@@ -188,24 +252,17 @@ def session_mode():
         elif event == 'Send to Unity':
             message = values['-INPUT-']
             send_to_unity(message)
-            log_text_gaze(window)
         elif event == 'Play Audio':
             play_audio_file(window, values['-AUDIO-FILE-'])
         elif event == 'Stop Audio':
-            stop_audio()
-        elif event == 'Display Avg Time (Audio-Mic)':
-            display_average_time(window, time_differences_audio_mic, "audio playback and mic activity")
-        elif event == 'Display Avg Time (Text Gaze-Mic)':
-            display_average_time(window, time_differences_text_gaze, "text gaze and mic activity")
-
+            stop_audio()   
+        elif event == '-WEBCAM-FRAME-':
+            window['-WEBCAM-'].update(data=values['-WEBCAM-FRAME-'])
+        
         update_graph(ax)
         canvas.draw()
 
     window.close()
-
-def log_text_gaze(window):
-    current_time = datetime.now()
-    text_gaze_times.append(current_time)
 
 def save_data_to_json():
     global pathToFile
