@@ -89,7 +89,7 @@ def stop_audio():
         print("Audio stopped.")
 
 # Mic monitoring
-def monitor_mic(window, threshold=500):
+def monitor_mic(window, threshold=300):
     global first_mic_activity_after_audio_detected
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
@@ -99,7 +99,7 @@ def monitor_mic(window, threshold=500):
         data = np.frombuffer(stream.read(1024, exception_on_overflow=False), dtype=np.int16)
         if (volume_level := np.abs(data).mean()) > threshold:
             current_time = datetime.now()
-            if (current_time - last_update_time).total_seconds() >= 1:
+            if (current_time - last_update_time).total_seconds() >= 0.1:
                 log_mic_activity(window, current_time)
                 last_update_time = current_time
 
@@ -133,8 +133,7 @@ def update_webcam(window):
     cap.release()
 
 
-# Graph functions for medical-style graphs
-def update_graph(ax):
+def update_graph(ax, x_min=None, x_max=None):
     ax.clear()  
     ax.set_title('Event Timeline', fontsize=14, fontweight='bold')
     ax.set_xlabel('Time', fontsize=12)
@@ -153,6 +152,7 @@ def update_graph(ax):
         'Audio': audio_playback_times
     }
 
+    # Plot the events
     for i, (event_label, event_times) in enumerate(events.items()):
         if not event_times:
             continue
@@ -162,20 +162,29 @@ def update_graph(ax):
 
         # Shade clusters within 3 seconds
         for j in range(1, len(event_times)):
-            if (event_times[j] - event_times[j - 1]).total_seconds() <= 3:
-                ax.axvspan(event_times[j - 1], event_times[j], color=colors[event_label], alpha=0.2)
+            if (event_times[j] - event_times[j - 1]).total_seconds() <= 1.5:
+                ax.fill_betweenx([i - 0.3, i + 0.3], event_times[j - 1], event_times[j], color=colors[event_label], alpha=0.2)
 
     if any(events.values()):
         ax.legend(frameon=False, fontsize=10)
-
+    
     # Set y-ticks to avoid clutter
     ax.set_yticks(list(range(len(events))))
     ax.set_yticklabels(list(events.keys()), fontsize=10)
 
+    # Set x-limits if provided, else use all event times
+    if x_min is not None and x_max is not None:
+        ax.set_xlim(x_min, x_max)
+    else:
+        # Set limits to encompass all events if no specific limits are provided
+        all_event_times = text_gaze_times + mic_activity_times + audio_playback_times
+        if all_event_times:
+            ax.set_xlim(min(all_event_times), max(all_event_times))
+
 
 
 def draw_figure(canvas_elem):
-    fig, ax = plt.subplots(figsize=(8, 2.5))  
+    fig, ax = plt.subplots(figsize=(15, 7.5))  
     fig.patch.set_facecolor('white')
     canvas = FigureCanvasTkAgg(fig, canvas_elem.TKCanvas)
     canvas.draw()
@@ -183,35 +192,34 @@ def draw_figure(canvas_elem):
     return fig, ax, canvas
 
 # GUI Setup
+
 def create_gui():
     layout = [
-        [sg.Canvas(key='-CANVAS-', size=(500, 540), pad=(0, 0))],
-    
-        # Bottom half: Text input, audio controls, and webcam feed
+        [sg.Canvas(key='-CANVAS-', size=(1000, 750), pad=(0, 0))],
+        [sg.Slider(range=(0, 100), orientation='h', size=(40, 15), key='-SCROLL-', enable_events=True)],  # Add a slider for scrolling
         [
             sg.Column(
-    [
-        [
-            sg.Text('Enter Text to be Displayed:', size=(30, 1)),  
-            sg.InputText(size=(50, 1), key='-INPUT-'), 
-            sg.Button('Send to Unity', size=(20, 1))
-        ],
-     
-        [
-            sg.Text('Audio File:', size=(30, 1)),  
-            sg.InputText(size=(50, 1), key='-AUDIO-FILE-'), 
-            sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),), size=(20, 1)), 
-        ],
-        [
-            sg.Button('Play Audio', size=(20, 1)), 
-            sg.Button('Stop Audio', size=(20, 1)),
-            sg.Button('Exit', size=(20, 1))  
-        ]
-    ],
-    vertical_alignment='top',
-    size=(800, 850),
-    element_justification='left'
-),
+                [
+                    [
+                        sg.Text('Enter Text to be Displayed:', size=(30, 1)),  
+                        sg.InputText(size=(50, 1), key='-INPUT-'), 
+                        sg.Button('Send to Unity', size=(20, 1))
+                    ],
+                    [
+                        sg.Text('Audio File:', size=(30, 1)),  
+                        sg.InputText(size=(50, 1), key='-AUDIO-FILE-'), 
+                        sg.FileBrowse(file_types=(("MP3 Files", "*.mp3"),), size=(20, 1)), 
+                    ],
+                    [
+                        sg.Button('Play Audio', size=(20, 1)), 
+                        sg.Button('Stop Audio', size=(20, 1)),
+                        sg.Button('Exit', size=(20, 1))  
+                    ]
+                ],
+                vertical_alignment='top',
+                size=(800, 850),
+                element_justification='left'
+            ),
             sg.Column(
                 [
                     [sg.Text('Live Mouth Feed', font=('Helvetica', 16, 'bold'), pad=(10, 10))],
@@ -224,6 +232,8 @@ def create_gui():
     ]
 
     return sg.Window('Session Mode - Speech Pathology XR', layout, finalize=True, resizable=True, size=(1920, 1080), location=(0, 0))
+
+
 
 
 
@@ -243,6 +253,11 @@ def session_mode():
     threading.Thread(target=monitor_mic, args=(window,), daemon=True).start()
     threading.Thread(target=update_webcam, args=(window,), daemon=True).start()
 
+    # Set initial time range
+    time_range = 1  # Viewable range in minutes
+    x_min = datetime.now()
+    x_max = x_min + np.timedelta64(time_range, 'm')
+    
     while True:
         event, values = window.read(timeout=100)
         if event in (sg.WIN_CLOSED, 'Exit'):
@@ -258,8 +273,30 @@ def session_mode():
             stop_audio()   
         elif event == '-WEBCAM-FRAME-':
             window['-WEBCAM-'].update(data=values['-WEBCAM-FRAME-'])
-        
-        update_graph(ax)
+        elif event == '-SCROLL-':
+            scroll_value = values['-SCROLL-'] / 100  # Normalize to range 0-1
+            all_times = text_gaze_times + mic_activity_times + audio_playback_times
+            if all_times:
+                overall_min = min(all_times)
+                overall_max = max(all_times)
+                total_range = (overall_max - overall_min).total_seconds()
+                
+                # Calculate offset based on scroll value
+                scroll_value = values['-SCROLL-'] / 100  # Normalize to range 0-1
+                offset = total_range * scroll_value
+                
+                new_x_min = overall_min + np.timedelta64(int(-offset), 's')
+                new_x_max = overall_max + np.timedelta64(int(-offset), 's')
+
+                  # Ensure new_x_min is less than new_x_max
+                if new_x_min >= new_x_max:
+                    new_x_min = overall_min
+                    new_x_max = overall_max
+                    
+                update_graph(ax, new_x_min, new_x_max)
+                canvas.draw()
+
+        update_graph(ax, x_min, x_max)  # Refresh graph based on latest min and max
         canvas.draw()
 
     window.close()
@@ -294,22 +331,39 @@ def review_mode():
     audio_playback_times = [datetime.fromisoformat(ts) for ts in data['audio_playback_times']]
     time_differences_audio_mic = data['time_differences_audio_mic']
     time_differences_text_gaze = data['time_differences_text_gaze']
-
+    
     layout = [
         [sg.Text('Review Session Data', font=('Helvetica', 16))],
         [sg.Canvas(key='-REVIEW-CANVAS-', size=(400, 400))],
+        [sg.Slider(range=(0, 100), orientation='h', size=(40, 15), key='-REVIEW-SCROLL-', enable_events=True)],
         [sg.Button('Back')]
     ]
     review_window = sg.Window('Review Mode', layout, finalize=True, resizable=True, size=(1920, 1080), location=(0, 0))
-
     fig, ax, canvas = draw_figure(review_window['-REVIEW-CANVAS-'])
-    update_graph(ax)
+
+    # Determine the time range based on available event times
+    all_times = text_gaze_times + mic_activity_times + audio_playback_times
+    x_min = min(all_times) if all_times else datetime.now()
+    x_max = max(all_times) if all_times else x_min + np.timedelta64(1, 'm')  # Default to 1 minute if no events
+
+    update_graph(ax, x_min, x_max)
     canvas.draw()
 
     while True:
         event, values = review_window.read()
         if event in (sg.WIN_CLOSED, 'Back'):
             break
+        elif event == '-REVIEW-SCROLL-':
+            # Adjust x-axis limits based on slider value
+            scroll_value = values['-REVIEW-SCROLL-'] / 100  # Normalize to range 0-1
+            if text_gaze_times or mic_activity_times or audio_playback_times:
+                min_time = min(all_times)
+                max_time = max(all_times)
+                offset = (max_time - min_time) * scroll_value
+                new_x_min = min_time - offset
+                new_x_max = max_time - offset
+                update_graph(ax, new_x_min, new_x_max)
+                canvas.draw()
 
     review_window.close()
 
